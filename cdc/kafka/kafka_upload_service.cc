@@ -25,6 +25,8 @@
 
 namespace cdc::kafka {
 
+using seastar::sstring;
+
 std::vector<schema_ptr> get_tables_with_cdc_enabled() {
     return std::vector<schema_ptr>();
 }
@@ -65,7 +67,7 @@ void kafka_upload_service::on_timer() {
     }
 }
 
-sstring kind_to_avro_type(abstract_type::kind kind) {
+sstring kafka_upload_service::kind_to_avro_type(abstract_type::kind kind) {
     switch (kind) {
         //TODO: Complex types + Check if all kinds are translated into appropriate avro types
         case abstract_type::kind::ascii:
@@ -129,29 +131,34 @@ sstring kind_to_avro_type(abstract_type::kind kind) {
     }
 }
 
-sstring compose_key_schema_for(schema_ptr schema){
+seastar::sstring kafka_upload_service::compose_key_schema_for(schema_ptr schema){
 
     sstring key_schema, key_schema_fields;
-    key_schema_fields = compose_avro_record_fields(schema->partition_key_columns());
+    schema::columns_type primary_key_columns;
+    for(const column_definition& cdef : schema->all_columns()){
+        if(cdef.is_primary_key()){
+            primary_key_columns.push_back(cdef);
+        }
+    }
+    key_schema_fields = compose_avro_record_fields(primary_key_columns);
     key_schema = compose_avro_schema("key_schema", schema->ks_name() + "." + schema->cf_name(),
                                      key_schema_fields);
     return key_schema;
 }
 
-sstring compose_value_schema_for(schema_ptr schema){
+sstring kafka_upload_service::compose_value_schema_for(schema_ptr schema){
 
     sstring value_schema, value_schema_fields;
-    value_schema_fields = compose_avro_record_fields(
-            boost::make_iterator_range(schema->all_columns().begin(), schema->all_columns().end()));
+    value_schema_fields = compose_avro_record_fields(schema->all_columns());
     value_schema = compose_avro_schema("value_schema", schema->ks_name() + "." + schema->cf_name(),
                                        value_schema_fields);
     return value_schema;
 }
 
-sstring compose_avro_record_fields(schema::const_iterator_range_type column_range){
+sstring kafka_upload_service::compose_avro_record_fields(const schema::columns_type& columns){
     sstring result = "";
     int n = 0;
-    for(const column_definition& cdef : column_range){
+    for(const column_definition& cdef : columns){
         if (n++ != 0) {
             result += ",";
         }
@@ -163,7 +170,7 @@ sstring compose_avro_record_fields(schema::const_iterator_range_type column_rang
     return result;
 }
 
-sstring compose_avro_schema(sstring avro_name, sstring avro_namespace, sstring avro_fields) {
+sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avro_namespace, sstring avro_fields) {
         sstring result = sstring("{"
                                  "\"type\":\"record\","
                                  "\"name\":\"" + avro_name + "\","

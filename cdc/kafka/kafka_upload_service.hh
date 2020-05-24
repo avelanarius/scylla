@@ -38,7 +38,7 @@ using timeuuid = utils::UUID;
 
 namespace cdc::kafka {
 
-using namespace seastar;
+using seastar::sstring;
 
 class kafka_upload_service final {
     service::storage_proxy& _proxy;
@@ -51,7 +51,7 @@ class kafka_upload_service final {
 
     sstring compose_key_schema_for(schema_ptr schema);
 
-    sstring compose_avro_record_fields(schema::const_iterator_range_type column_range);
+    sstring compose_avro_record_fields(const schema::columns_type& columns);
 
     sstring kind_to_avro_type(abstract_type::kind kind);
 
