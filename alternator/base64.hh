@@ -32,3 +32,7 @@ bytes base64_decode(std::string_view);
 inline bytes base64_decode(const rjson::value& v) {
   return base64_decode(std::string_view(v.GetString(), v.GetStringLength()));
 }
+
+size_t base64_decoded_len(std::string_view str);
+
+bool base64_begins_with(std::string_view base, std::string_view operand);

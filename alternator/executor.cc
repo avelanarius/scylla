@@ -1913,12 +1913,10 @@ static rjson::value calculate_size(const rjson::value& v) {
         }
         ret = it->value.MemberCount();
     } else if (it->name == "B") {
-        // TODO (optimization): Calculate the length of a base64-encoded
-        // string directly, without decoding it first.
         if (!it->value.IsString()) {
             throw api_error("ValidationException", format("invalid byte string: {}", v));
         }
-        ret = base64_decode(it->value).size();
+        ret = base64_decoded_len(rjson::to_string_view(it->value));
     } else {
         rjson::value json_ret = rjson::empty_object();
         rjson::set(json_ret, "null", rjson::value(true));
@@ -2100,15 +2098,11 @@ rjson::value calculate_value(const parsed::value& v,
                         auto it2 = v2.MemberBegin();
                         if (it1->name == it2->name) {
                             if (it2->name == "S") {
-                                std::string_view val1(it1->value.GetString(), it1->value.GetStringLength());
-                                std::string_view val2(it2->value.GetString(), it2->value.GetStringLength());
+                                std::string_view val1 = rjson::to_string_view(it1->value);
+                                std::string_view val2 = rjson::to_string_view(it2->value);
                                 ret = val1.substr(0, val2.size()) == val2;
                             } else /* it2->name == "B" */ {
-                                // TODO (optimization): Check the begins_with condition directly on
-                                // the base64-encoded string, without making a decoded copy.
-                                bytes val1 = base64_decode(it1->value);
-                                bytes val2 = base64_decode(it2->value);
-                                ret = val1.substr(0, val2.size()) == val2;
+                                ret = base64_begins_with(rjson::to_string_view(it1->value), rjson::to_string_view(it2->value));
                             }
                         }
                     }
