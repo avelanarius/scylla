@@ -38,12 +38,25 @@ using timeuuid = utils::UUID;
 
 namespace cdc::kafka {
 
+using namespace seastar;
+
 class kafka_upload_service final {
     service::storage_proxy& _proxy;
     timer<seastar::lowres_clock> _timer;
     std::map<std::pair<sstring, sstring>, timeuuid> _last_seen_row_key;
 
     void on_timer();
+
+    sstring compose_value_schema_for(schema_ptr schema);
+
+    sstring compose_key_schema_for(schema_ptr schema);
+
+    sstring compose_avro_record_fields(schema::const_iterator_range_type column_range);
+
+    sstring kind_to_avro_type(abstract_type::kind kind);
+
+    sstring compose_avro_schema(sstring avro_name, sstring avro_namespace, sstring avro_fields);
+
 
     void arm_timer() {
         _timer.arm(seastar::lowres_clock::now() + std::chrono::seconds(10));
@@ -61,6 +74,7 @@ public:
         _timer.cancel();
         return make_ready_future<>();
     }
+
 };
 
 } // namespace cdc::kafka

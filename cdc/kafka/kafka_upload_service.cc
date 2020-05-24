@@ -65,4 +65,112 @@ void kafka_upload_service::on_timer() {
     }
 }
 
+sstring kind_to_avro_type(abstract_type::kind kind) {
+    switch (kind) {
+        //TODO: Complex types + Check if all kinds are translated into appropriate avro types
+        case abstract_type::kind::ascii:
+            return sstring("string");
+        case abstract_type::kind::boolean:
+            return sstring("boolean");
+        case abstract_type::kind::byte:
+            return sstring("string");
+        case abstract_type::kind::bytes:
+            return sstring("string");
+        case abstract_type::kind::counter:
+            return sstring("long");
+        case abstract_type::kind::date:
+            return sstring("string");
+        case abstract_type::kind::decimal:
+            return sstring("float");
+        case abstract_type::kind::double_kind:
+            return sstring("double");
+        case abstract_type::kind::duration:
+            return sstring("string");
+        case abstract_type::kind::empty:
+            return sstring("string");
+        case abstract_type::kind::float_kind:
+            return sstring("float");
+        case abstract_type::kind::inet:
+            return sstring("string");
+        case abstract_type::kind::int32:
+            return sstring("int");
+        case abstract_type::kind::list:
+            return sstring("string");
+        case abstract_type::kind::long_kind:
+            return sstring("long");
+        case abstract_type::kind::map:
+            return sstring("string");
+        case abstract_type::kind::reversed:
+            return sstring("string");
+        case abstract_type::kind::set:
+            return sstring("string");
+        case abstract_type::kind::short_kind:
+            return sstring("int");
+        case abstract_type::kind::simple_date:
+            return sstring("string");
+        case abstract_type::kind::time:
+            return sstring("string");
+        case abstract_type::kind::timestamp:
+            return sstring("string");
+        case abstract_type::kind::timeuuid:
+            return sstring("string");
+        case abstract_type::kind::tuple:
+            return sstring("string");
+        case abstract_type::kind::user:
+            return sstring("string");
+        case abstract_type::kind::utf8:
+            return sstring("string");
+        case abstract_type::kind::uuid:
+            return sstring("string");
+        case abstract_type::kind::varint:
+            return sstring("string");
+        default:
+            return sstring("string");
+    }
 }
+
+sstring compose_key_schema_for(schema_ptr schema){
+
+    sstring key_schema, key_schema_fields;
+    key_schema_fields = compose_avro_record_fields(schema->partition_key_columns());
+    key_schema = compose_avro_schema("key_schema", schema->ks_name() + "." + schema->cf_name(),
+                                     key_schema_fields);
+    return key_schema;
+}
+
+sstring compose_value_schema_for(schema_ptr schema){
+
+    sstring value_schema, value_schema_fields;
+    value_schema_fields = compose_avro_record_fields(
+            boost::make_iterator_range(schema->all_columns().begin(), schema->all_columns().end()));
+    value_schema = compose_avro_schema("value_schema", schema->ks_name() + "." + schema->cf_name(),
+                                       value_schema_fields);
+    return value_schema;
+}
+
+sstring compose_avro_record_fields(schema::const_iterator_range_type column_range){
+    sstring result = "";
+    int n = 0;
+    for(const column_definition& cdef : column_range){
+        if (n++ != 0) {
+            result += ",";
+        }
+        result += "{";
+        result += "\"name\":\"" + cdef.name_as_text() + "\"";
+        result += ",\"type\":[\"null\",\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"]";
+        result += "}";
+    }
+    return result;
+}
+
+sstring compose_avro_schema(sstring avro_name, sstring avro_namespace, sstring avro_fields) {
+        sstring result = sstring("{"
+                                 "\"type\":\"record\","
+                                 "\"name\":\"" + avro_name + "\","
+                                 "\"namespace\":\"" + avro_namespace + "\","
+                                 "\"fields\":[" + avro_fields + "]"
+                                 "}");
+        return result;
+ }
+
+} // namespace cdc::kafka
