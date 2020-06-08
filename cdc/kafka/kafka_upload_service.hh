@@ -74,11 +74,13 @@ class kafka_upload_service final {
 
     future<lw_shared_ptr<cql3::untyped_result_set>> select(schema_ptr table, timeuuid last_seen_key);
 
-    std::shared_ptr<std::vector<uint8_t>> convert(schema_ptr schema, const cql3::untyped_result_set_row &row);
+    std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> convert(schema_ptr schema, const cql3::untyped_result_set_row &row);
 
-    std::vector<schema_ptr> get_tables_with_cdc_enabled();
+    std::vector<std::pair<schema_ptr, schema_ptr>> get_cdc_tables();
 
     timeuuid do_kafka_replicate(schema_ptr table_schema, timeuuid last_seen);
+
+    void encode_union(avro::GenericDatum &un, const cql3::untyped_result_set_row &row, sstring &name, abstract_type::kind kind);
 
     void arm_timer() {
         _timer.arm(seastar::lowres_clock::now() + std::chrono::seconds(10));

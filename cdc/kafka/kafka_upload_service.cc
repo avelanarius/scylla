@@ -67,19 +67,19 @@ kafka_upload_service::kafka_upload_service(service::storage_proxy& proxy, auth::
     arm_timer();
 }
 
-std::vector<schema_ptr> kafka_upload_service::get_tables_with_cdc_enabled() {
+std::vector<std::pair<schema_ptr, schema_ptr>> kafka_upload_service::get_cdc_tables() {
     auto tables = _proxy.get_db().local().get_column_families();
 
-    std::vector<schema_ptr> tables_with_cdc;
+    std::vector<std::pair<schema_ptr, schema_ptr>> cdc_tables;
     for (auto& [id, table] : tables) {
         auto schema = table->schema();
         if (schema->cdc_options().enabled()) {
-            auto schema_cdc = _proxy.get_db().local().find_schema(schema->ks_name(), schema->cf_name() + "_scylla_cdc_log");
-            tables_with_cdc.push_back(schema_cdc);
+            auto table_schema = _proxy.get_db().local().find_schema(schema->ks_name(), schema->cf_name());
+            auto cdc_schema = _proxy.get_db().local().find_schema(schema->ks_name(), schema->cf_name() + "_scylla_cdc_log");
+            cdc_tables.push_back(std::make_pair(table_schema, cdc_schema));
         }
     }
-
-    return tables_with_cdc;
+    return cdc_tables;
 }
 
 timeuuid kafka_upload_service::do_kafka_replicate(schema_ptr table_schema, timeuuid last_seen) {
@@ -109,12 +109,13 @@ timeuuid kafka_upload_service::do_kafka_replicate(schema_ptr table_schema, timeu
 void kafka_upload_service::on_timer() {
     arm_timer();
 
-    auto tables_with_cdc_enabled = get_tables_with_cdc_enabled();
+    std::map<std::pair<sstring, sstring>, std::set<sstring>> cdc_primary_keys;
+    auto cdc_tables = get_cdc_tables();
     std::set<std::pair<sstring, sstring>> cdc_keyspace_table;
 
     // Remove all entries not seen in set of CDC enabled tables
-    for (auto& table : tables_with_cdc_enabled) {
-        cdc_keyspace_table.emplace(table->ks_name(), table->cf_name());
+    for (auto& entry : cdc_tables) {
+        cdc_keyspace_table.emplace(entry.first->ks_name(), entry.first->cf_name());
     }
 
     for (auto it = _last_seen_row_key.cbegin(); it != _last_seen_row_key.cend(); ) {
@@ -126,15 +127,15 @@ void kafka_upload_service::on_timer() {
         }
     }
 
-    for (auto& table : tables_with_cdc_enabled) {
-        std::pair<sstring, sstring> entry = {table->ks_name(), table->cf_name()};
+    for (auto& tables : cdc_tables) {
+        std::pair<sstring, sstring> entry = {tables.first->ks_name(), tables.first->cf_name()};
         auto has_entry = _last_seen_row_key.count(entry) != 0;
         if (!has_entry) {
             _last_seen_row_key[entry] = utils::UUID();
         }
         // Create Kafka topic and schema
         auto last_seen = _last_seen_row_key[entry];
-        auto result = select(table, last_seen).then([this, table](lw_shared_ptr<cql3::untyped_result_set> results){
+        auto result = select(tables.second, last_seen).then([this, table = tables.first](lw_shared_ptr<cql3::untyped_result_set> results){
             if (! results) {
                 std::cout << "empty_query_results" << std::endl;
                 return;
@@ -143,15 +144,16 @@ void kafka_upload_service::on_timer() {
                 auto op = row.get_opt<int8_t>("cdc$operation");
                 if (op) {
                     if (op.value() == 2) {
-                        auto data = convert(table, row); // send this data
+                        auto key_and_value = convert(table, row); // send this data
 
-                        seastar::sstring value { data->begin(), data->end() };
-                        std::string sufix = "_scylla_cdc_log";
-                        seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() - sufix.length() };
-//                        seastar::sstring topic = "";
+                        seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
+                        seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
+                        seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
 
                         std::cout << "\n\n\ntopic: " << topic << "\n";
-                        std::cout << "len: " << data->size() << " -> "  << value.length() << "\nvalue: ";
+                        std::cout << "len: " << key.length() << "\nkey: ";
+                        std::cout << key << "\n\n";
+                        std::cout << "len: " << value.length() << "\nvalue: ";
                         std::cout << value << "\n\n";
 
                         auto f = _producer->produce(topic, "1", value).handle_exception([] (auto ex) {
@@ -234,9 +236,7 @@ sstring kafka_upload_service::compose_value_schema_for(schema_ptr schema){
 
     sstring value_schema, value_schema_fields;
     value_schema_fields = compose_avro_record_fields(schema->all_columns());
-    std::string sufix = "_scylla_cdc_log";
-    seastar::sstring topic { schema->cf_name().begin(), schema->cf_name().end() - sufix.length() };
-    value_schema = compose_avro_schema("value_schema_" + topic, schema->ks_name(),
+    value_schema = compose_avro_schema("value_schema", schema->ks_name() + "." + schema->cf_name(),
                                        value_schema_fields);
     return value_schema;
 }
@@ -245,11 +245,6 @@ sstring kafka_upload_service::compose_avro_record_fields(const schema::columns_t
     sstring result = "";
     int n = 0;
     for(const column_definition& cdef : columns){
-
-        if (cdef.name_as_text().compare(0, 4, "cdc$") == 0) {
-            continue;
-        }
-
         if (n++ != 0) {
             result += ",";
         }
@@ -328,116 +323,135 @@ future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(sch
     })*/
 }
 
-std::shared_ptr<std::vector<uint8_t>> kafka_upload_service::convert(schema_ptr schema, const cql3::untyped_result_set_row &row) {
-    auto avro_schema = compose_value_schema_for(schema);
-    //auto avro_schema = "{\"type\":\"record\",\"name\":\"value_schema\",\"namespace\":\"ks.t_scylla_cdc_log\",\"fields\":[{\"name\":\"cdc$stream_id\",\"type\":[\"null\",\"string\"]},{\"name\":\"cdc$time\",\"type\":[\"null\",\"string\"]},{\"name\":\"cdc$batch_seq_no\",\"type\":[\"null\",\"int\"]},{\"name\":\"cdc$operation\",\"type\":[\"null\",\"string\"]},{\"name\":\"cdc$ttl\",\"type\":[\"null\",\"long\"]},{\"name\":\"ck\",\"type\":[\"null\",\"int\"]},{\"name\":\"pk\",\"type\":[\"null\",\"int\"]},{\"name\":\"v\",\"type\":[\"null\",\"int\"]}]}";
+void kafka_upload_service::encode_union(avro::GenericDatum &un, const cql3::untyped_result_set_row &row, sstring &name, abstract_type::kind kind) {
+    switch (kind) {
+        //TODO: Complex types + Check if all kinds are translated into appropriate avro types
+        case abstract_type::kind::boolean:
+        {
+            auto value = row.get_opt<bool>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<bool>() = value.value();
+            }
+            break;
+        }
+        case abstract_type::kind::counter:
+        case abstract_type::kind::long_kind:
+        {
+            auto value = row.get_opt<int64_t>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<int64_t>() = value.value();
+            }
+            break;
+        }
+        case abstract_type::kind::decimal:
+        case abstract_type::kind::float_kind:
+        {
+            auto value = row.get_opt<float>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<float>() = value.value();
+            }
+            break;
+        }
+        case abstract_type::kind::double_kind:
+        {
+            auto value = row.get_opt<double>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<double>() = value.value();
+            }
+            break;
+        }
+        case abstract_type::kind::int32:
+        case abstract_type::kind::short_kind:
+        {
+            auto value = row.get_opt<int32_t>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<int32_t>() = value.value();
+            }
+            break;
+        }
+        case abstract_type::kind::ascii:
+        case abstract_type::kind::byte:
+        case abstract_type::kind::bytes:
+        case abstract_type::kind::date:
+        case abstract_type::kind::duration:
+        case abstract_type::kind::empty:
+        case abstract_type::kind::inet:
+        case abstract_type::kind::list:
+        case abstract_type::kind::map:
+        case abstract_type::kind::reversed:
+        case abstract_type::kind::set:
+        case abstract_type::kind::simple_date:
+        case abstract_type::kind::time:
+        case abstract_type::kind::timestamp:
+        case abstract_type::kind::timeuuid:
+        case abstract_type::kind::tuple:
+        case abstract_type::kind::user:
+        case abstract_type::kind::utf8:
+        case abstract_type::kind::uuid:
+        case abstract_type::kind::varint:
+        default:
+        {
+            auto value = row.get_opt<sstring>(name);
+            if (value) {
+                un.selectBranch(1);
+                un.value<std::string>() = std::string(value.value());
+            }
+            break;
+        }
+    }
+}
+
+std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> kafka_upload_service::convert(schema_ptr schema, const cql3::untyped_result_set_row &row) {
+    auto key_schema = compose_key_schema_for(schema);
+    auto value_schema = compose_value_schema_for(schema);
     avro::ValidSchema compiledSchema;
-    compiledSchema = avro::compileJsonSchemaFromString(avro_schema);
+    compiledSchema = avro::compileJsonSchemaFromString(value_schema);
+    avro::ValidSchema keySchema = avro::compileJsonSchemaFromString(key_schema);
     avro::OutputStreamPtr out = avro::memoryOutputStream();
+    avro::OutputStreamPtr out_key = avro::memoryOutputStream();
     avro::EncoderPtr e = avro::validatingEncoder(compiledSchema, avro::binaryEncoder());
+    avro::EncoderPtr e_key = avro::validatingEncoder(keySchema, avro::binaryEncoder());
     e->init(*out);
+    e_key->init(*out_key);
     avro::GenericDatum datum(compiledSchema);
+    avro::GenericDatum key_datum(keySchema);
+    std::set <sstring> primary_key_columns;
+    for(const column_definition& cdef : schema->all_columns()){
+        if(cdef.is_primary_key()){
+            primary_key_columns.insert(cdef.name_as_text());
+        }
+    }
     if (datum.type() == avro::AVRO_RECORD) {
         avro::GenericRecord &record = datum.value<avro::GenericRecord>();
-        auto columns = row.get_columns();
+        avro::GenericRecord &keyRecord = key_datum.value<avro::GenericRecord>();
+        auto columns = schema->all_columns();
         for (auto &column : columns) {
-            auto name = column->name->to_string();
+            auto name = column.name_as_text();
 
-            if (name.compare(0, 4, "cdc$") == 0) {
-                continue;
-            }
-
-            abstract_type::kind kind = column->type->get_kind();
+            abstract_type::kind kind = column.type->get_kind();
             avro::GenericDatum &un = record.field(name);
-            switch (kind) {
-                //TODO: Complex types + Check if all kinds are translated into appropriate avro types
-                case abstract_type::kind::boolean:
-                {
-                    auto value = row.get_opt<bool>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<bool>() = value.value();
-                    }
-                    break;
-                }
-                case abstract_type::kind::counter:
-                case abstract_type::kind::long_kind:
-                {                 
-                    auto value = row.get_opt<int64_t>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<int64_t>() = value.value();
-                    }
-                    break;
-                }
-                case abstract_type::kind::decimal:
-                case abstract_type::kind::float_kind:
-                {
-                    auto value = row.get_opt<float>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<float>() = value.value();
-                    }
-                    break;
-                }                
-                case abstract_type::kind::double_kind:
-                {
-                    auto value = row.get_opt<double>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<double>() = value.value();
-                    }
-                    break;
-                }
-                case abstract_type::kind::int32:
-                case abstract_type::kind::short_kind:
-                {
-                    auto value = row.get_opt<int32_t>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<int32_t>() = value.value();
-                    }
-                    break;
-                }
-                case abstract_type::kind::ascii:
-                case abstract_type::kind::byte:
-                case abstract_type::kind::bytes:
-                case abstract_type::kind::date:
-                case abstract_type::kind::duration:
-                case abstract_type::kind::empty:
-                case abstract_type::kind::inet:
-                case abstract_type::kind::list:
-                case abstract_type::kind::map:
-                case abstract_type::kind::reversed:
-                case abstract_type::kind::set:
-                case abstract_type::kind::simple_date:
-                case abstract_type::kind::time:
-                case abstract_type::kind::timestamp:
-                case abstract_type::kind::timeuuid:
-                case abstract_type::kind::tuple:
-                case abstract_type::kind::user:
-                case abstract_type::kind::utf8:
-                case abstract_type::kind::uuid:
-                case abstract_type::kind::varint:
-                default:
-                {
-                    auto value = row.get_opt<sstring>(name);
-                    if (value) {
-                        un.selectBranch(1);
-                        un.value<std::string>() = std::string(value.value());
-                    }
-                    break;
-                }
+            encode_union(un, row, name, kind);
+            if (primary_key_columns.count(name) > 0) {
+                avro::GenericDatum &key_un = keyRecord.field(name);
+                encode_union(key_un, row, name, kind);
             }
         }
     }
     avro::encode(*e,datum);
+    avro::encode(*e_key, key_datum);
     e->flush();
+    e_key->flush();
     auto v = avro::snapshot(*out);
+    auto k = avro::snapshot(*out_key);
 
     /* Write framing */
     //schema->framing_write(res);
-    return v;
+    return std::make_pair(k, v);
 }
 
 } // namespace cdc::kafka
