@@ -51,7 +51,7 @@ kafka_upload_service::kafka_upload_service(service::storage_proxy& proxy, auth::
 {
     kafka4seastar::producer_properties properties;
     properties._client_id = "cdc_replication_service";
-    properties._request_timeout = 10000;
+//    properties._request_timeout = 10000;
     properties._servers = {
             {"172.20.0.3", 9092}
     };
@@ -148,12 +148,13 @@ void kafka_upload_service::on_timer() {
                         seastar::sstring value { data->begin(), data->end() };
                         std::string sufix = "_scylla_cdc_log";
                         seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() - sufix.length() };
+//                        seastar::sstring topic = "";
 
                         std::cout << "\n\n\ntopic: " << topic << "\n";
-                        std::cout << "len: " << value.length() << "\nvalue: ";
+                        std::cout << "len: " << data->size() << " -> "  << value.length() << "\nvalue: ";
                         std::cout << value << "\n\n";
 
-                        auto f = _producer->produce(topic, value, value).handle_exception([] (auto ex) {
+                        auto f = _producer->produce(topic, "1", value).handle_exception([] (auto ex) {
 //                        auto f = _producer->produce("topic", "", "KUPSKO").handle_exception([] (auto ex) {
                             std::cout << "\n\nproblem producing: " << ex << "\n\n";
                         });
@@ -224,7 +225,7 @@ seastar::sstring kafka_upload_service::compose_key_schema_for(schema_ptr schema)
         }
     }
     key_schema_fields = compose_avro_record_fields(primary_key_columns);
-    key_schema = compose_avro_schema("key_schema", schema->ks_name() + "." + schema->cf_name(),
+    key_schema = compose_avro_schema("key_schema", schema->ks_name(),
                                      key_schema_fields);
     return key_schema;
 }
@@ -233,7 +234,9 @@ sstring kafka_upload_service::compose_value_schema_for(schema_ptr schema){
 
     sstring value_schema, value_schema_fields;
     value_schema_fields = compose_avro_record_fields(schema->all_columns());
-    value_schema = compose_avro_schema("value_schema", schema->ks_name() + "." + schema->cf_name(),
+    std::string sufix = "_scylla_cdc_log";
+    seastar::sstring topic { schema->cf_name().begin(), schema->cf_name().end() - sufix.length() };
+    value_schema = compose_avro_schema("value_schema_" + topic, schema->ks_name(),
                                        value_schema_fields);
     return value_schema;
 }
@@ -242,12 +245,18 @@ sstring kafka_upload_service::compose_avro_record_fields(const schema::columns_t
     sstring result = "";
     int n = 0;
     for(const column_definition& cdef : columns){
+
+        if (cdef.name_as_text().compare(0, 4, "cdc$") == 0) {
+            continue;
+        }
+
         if (n++ != 0) {
             result += ",";
         }
         result += "{";
-        result += "\"name\":\"" + cdef.name_as_text() + "\"";
-        result += ",\"type\":[\"null\",\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"]";
+        result += "\"name\":\"" + cdef.name_as_text() + "\",";
+        result += "\"type\":[\"null\",\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"]";
+//        result += "\"type\":\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"";
         result += "}";
     }
     return result;
@@ -257,9 +266,10 @@ sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avr
         sstring result = sstring("{"
                                  "\"type\":\"record\","
                                  "\"name\":\"" + avro_name + "\","
-                                 "\"namespace\":\"" + avro_namespace + "\","
+//                                 "\"namespace\":\"" + avro_namespace + "\","
                                  "\"fields\":[" + avro_fields + "]"
                                  "}");
+        std::cout << "\n\nschema: " << result << "\n\n";
         return result;
  }
 
