@@ -22,6 +22,8 @@
 #include <vector>
 #include <set>
 
+#include <iomanip>
+
 #include "database.hh"
 #include "kafka_upload_service.hh"
 
@@ -51,20 +53,23 @@ kafka_upload_service::kafka_upload_service(service::storage_proxy& proxy, auth::
 {
     kafka4seastar::producer_properties properties;
     properties._client_id = "cdc_replication_service";
-//    properties._request_timeout = 10000;
     properties._servers = {
-            {"172.20.0.3", 9092}
+            {"172.20.0.2", 9092}
+//            {"172.20.0.3", 9092}
     };
+
+    _proxy.set_kafka_upload_service(this);
 
     // TODO: What if doesn't connect to any broker? Handle exceptions
     _producer = std::make_unique<kafka4seastar::kafka_producer>(std::move(properties));
-    _producer_initialized = _producer->init().handle_exception([] (auto exp) {
-        std::cout << "\n\nconnection exception\n\n";
+    _producer_initialized = _producer->init().then_wrapped([this] (auto&& f) {
+        try {
+            f.get();
+            arm_timer();
+        } catch (...) {
+            std::cout << "\nConnection exception: Kafka Upload Service not started\n";
+        }
     });
-
-
-    _proxy.set_kafka_upload_service(this);
-    arm_timer();
 }
 
 std::vector<std::pair<schema_ptr, schema_ptr>> kafka_upload_service::get_cdc_tables() {
@@ -83,27 +88,15 @@ std::vector<std::pair<schema_ptr, schema_ptr>> kafka_upload_service::get_cdc_tab
 }
 
 timeuuid kafka_upload_service::do_kafka_replicate(schema_ptr table_schema, timeuuid last_seen) {
-//    sstring topic = "topic";
-//    sstring key = "";
-//
-//    auto f = select(table_schema, last_seen).then([table_schema] (auto result) {
-//        size_t len;
-//        uint8_t* buffer;
-//        auto avro = convert(table_schema, result->);
-//        avro->next(&buffer, &len);
-//
-//        std::stringstream ss;
-//        for (size_t i = 0; i < len; i++) {
-//            ss << buffer[i];
-//        }
-//        std::string value = ss.str();
-//        std::cout << "value: " << value << "\n";
-//    });
-//    _pending_queue = _pending_queue.then([f = std::move(f)] () mutable {
-//       return std::move(f);
-//    });
-
     return last_seen;
+}
+
+seastar::sstring get_schema_id(uint32_t x) {
+    std::vector<unsigned char> v { static_cast<const unsigned char*>(static_cast<const void*>(&x)),
+                        static_cast<const unsigned char*>(static_cast<const void*>(&x)) + sizeof x };
+    std::reverse(std::begin(v), std::end(v));
+    seastar::sstring str {v.begin(), v.end()};
+    return str;
 }
 
 void kafka_upload_service::on_timer() {
@@ -137,7 +130,7 @@ void kafka_upload_service::on_timer() {
         auto last_seen = _last_seen_row_key[entry];
         auto result = select(tables.second, last_seen).then([this, table = tables.first](lw_shared_ptr<cql3::untyped_result_set> results){
             if (! results) {
-                std::cout << "empty_query_results" << std::endl;
+                std::cout << "empty_query_results for " << table->ks_name() << "\n";
                 return;
             }
             for (auto &row : *results) {
@@ -150,17 +143,23 @@ void kafka_upload_service::on_timer() {
                         seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
                         seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
 
+                        uint32_t key_schema_id = 324;
+                        seastar::sstring magic_key = "\0" + get_schema_id(key_schema_id);
+
+                        uint32_t val_schema_id = 323;
+                        seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
+
                         std::cout << "\n\n\ntopic: " << topic << "\n";
                         std::cout << "len: " << key.length() << "\nkey: ";
                         std::cout << key << "\n\n";
                         std::cout << "len: " << value.length() << "\nvalue: ";
                         std::cout << value << "\n\n";
 
-                        auto f = _producer->produce(topic, "1", value).handle_exception([] (auto ex) {
-//                        auto f = _producer->produce("topic", "", "KUPSKO").handle_exception([] (auto ex) {
+                        auto f = _producer->produce(topic, magic_key + key, magic_val + value).handle_exception([] (auto ex) {
                             std::cout << "\n\nproblem producing: " << ex << "\n\n";
                         });
-                        _pending_queue = _pending_queue.then([f = std::move(f)] () mutable {
+                        _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
+//                            arm_timer();
                             return std::move(f);
                         });
                     }
@@ -227,7 +226,7 @@ seastar::sstring kafka_upload_service::compose_key_schema_for(schema_ptr schema)
         }
     }
     key_schema_fields = compose_avro_record_fields(primary_key_columns);
-    key_schema = compose_avro_schema("key_schema", schema->ks_name(),
+    key_schema = compose_avro_schema("key_schema", schema->ks_name() + "." + schema->cf_name(),
                                      key_schema_fields);
     return key_schema;
 }
@@ -251,7 +250,6 @@ sstring kafka_upload_service::compose_avro_record_fields(const schema::columns_t
         result += "{";
         result += "\"name\":\"" + cdef.name_as_text() + "\",";
         result += "\"type\":[\"null\",\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"]";
-//        result += "\"type\":\""  + kind_to_avro_type(cdef.type->get_kind()) + "\"";
         result += "}";
     }
     return result;
@@ -261,7 +259,7 @@ sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avr
         sstring result = sstring("{"
                                  "\"type\":\"record\","
                                  "\"name\":\"" + avro_name + "\","
-//                                 "\"namespace\":\"" + avro_namespace + "\","
+                                 "\"namespace\":\"" + avro_namespace + "\","
                                  "\"fields\":[" + avro_fields + "]"
                                  "}");
         std::cout << "\n\nschema: " << result << "\n\n";
@@ -449,8 +447,6 @@ std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint
     auto v = avro::snapshot(*out);
     auto k = avro::snapshot(*out_key);
 
-    /* Write framing */
-    //schema->framing_write(res);
     return std::make_pair(k, v);
 }
 
