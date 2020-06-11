@@ -129,13 +129,13 @@ void kafka_upload_service::on_timer() {
         auto last_seen = _last_seen_row_key[entry];
         auto result = select(tables.second, last_seen).then([this, entry, table = tables.first] (lw_shared_ptr<cql3::untyped_result_set> results) {
             if (!results) {
-                std::cout << "empty_query_results for " << table->cf_name() << "\n";
+                std::cout << "DEBUG	 Kafka_Upload_Service: no new mutations for " << table->cf_name() << "\n";
                 return;
             }
             for (auto &row : *results) {
                 auto op = row.get_opt<int8_t>("cdc$operation");
                 if (op) {
-                    if (op.value() == 2 || op.value() == 1) { // INSERT and UPDATE
+                    if (op.value() == 2 || op.value() == 1 || op.value() == 3) { // INSERT and UPDATE and DELETE
                         auto key_and_value = convert(table, row, op.value());
 
                         seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
@@ -148,53 +148,29 @@ void kafka_upload_service::on_timer() {
                         uint32_t val_schema_id = 467;
                         seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
 
-                        std::cout << "\n\n\ntopic: " << topic << "\n";
+                        std::cout << "\n\ntopic: " << topic << "\n";
                         std::cout << "len: " << key.length() << "\nkey: ";
-                        std::cout << key << "\n\n";
+                        std::cout << key << "\n";
                         std::cout << "len: " << value.length() << "\nvalue: ";
                         std::cout << value << "\n\n";
 
-                        auto f = _producer->produce(topic, magic_key + key, magic_val + value).handle_exception([] (auto ex) {
+						key = magic_key + key;
+						value = op.value() == 3 ? value : magic_val + value;
+
+                        auto f = _producer->produce(topic, key, value).handle_exception([] (auto ex) {
                             std::cout << "\n\nproblem producing: " << ex << "\n\n";
                         });
                         _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
                             return std::move(f);
                         });
-                    } else if (op.value() == 3) { // DELETE
-						// Code for delete goes here
-						// To delete, the value has to be null and the key should reflect which key is being deleted
-						auto key_and_value = convert(table, row, op.value());
-
-                        seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
-                        seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
-                        seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
-
-                        uint32_t key_schema_id = 466;
-                        seastar::sstring magic_key = "\0" + get_schema_id(key_schema_id);
-
-                        uint32_t val_schema_id = 467;
-                        seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
-
-                        std::cout << "\n\n\ntopic: " << topic << "\n";
-                        std::cout << "len: " << key.length() << "\nkey: ";
-                        std::cout << key << "\n\n";
-                        std::cout << "len: " << value.length() << "\nvalue: ";
-                        std::cout << value << "\n\n";
-
-                        auto f = _producer->produce(topic, magic_key + key, magic_val).handle_exception([] (auto ex) {
-                            std::cout << "\n\nproblem producing: " << ex << "\n\n";
-                        });
-                        _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
-                            return std::move(f);
-                        });
-					}
+                    }
                 }
 				
 				auto timestamp = row.get_opt<timeuuid>("cdc$time");
-				std::cout << "\nApproaching timestamp: ";
+				// std::cout << "\nApproaching timestamp: ";
 				if (timestamp) {
 					if (timestamp.value() > _last_seen_row_key[entry]) {
-						std::cout << "INSIDE! \n" << timestamp.value();
+						// std::cout << "INSIDE! \n" << timestamp.value();
 						_last_seen_row_key[entry] = timestamp.value();
 					}
 				}
@@ -306,14 +282,14 @@ sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avr
 			result = "[\"null\"," + result + "]";
 		}
 
-        std::cout << "\n\nschema: " << result << "\n\n";
+        std::cout << "\nschema: " << result << "\n";
         return result;
 }
 
 future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(schema_ptr table, timeuuid last_seen_key) {
     std::vector<query::clustering_range> bounds;
 
-	std::cout << "\nLast Seen: " << last_seen_key << "\n";
+	// std::cout << "\nLast Seen: " << last_seen_key << "\n";
 
     auto lckp = clustering_key_prefix::from_single_value(*table, timeuuid_type->decompose(last_seen_key));
     auto lb = range_bound(lckp, false);
