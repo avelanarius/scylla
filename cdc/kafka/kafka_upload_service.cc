@@ -83,6 +83,7 @@ std::vector<std::pair<schema_ptr, schema_ptr>> kafka_upload_service::get_cdc_tab
             cdc_tables.push_back(std::make_pair(table_schema, cdc_schema));
         }
     }
+
     return cdc_tables;
 }
 
@@ -99,8 +100,6 @@ seastar::sstring get_schema_id(uint32_t x) {
 }
 
 void kafka_upload_service::on_timer() {
-    arm_timer();
-
     std::map<std::pair<sstring, sstring>, std::set<sstring>> cdc_primary_keys;
     auto cdc_tables = get_cdc_tables();
     std::set<std::pair<sstring, sstring>> cdc_keyspace_table;
@@ -127,16 +126,16 @@ void kafka_upload_service::on_timer() {
         }
         // Create Kafka topic and schema
         auto last_seen = _last_seen_row_key[entry];
-        auto result = select(tables.second, last_seen).then([this, table = tables.first](lw_shared_ptr<cql3::untyped_result_set> results){
-            if (! results) {
-                std::cout << "empty_query_results for " << table->ks_name() << "\n";
+        auto result = select(tables.second, last_seen).then([this, &entry, table = tables.first] (lw_shared_ptr<cql3::untyped_result_set> results) {
+            if (!results) {
+                std::cout << "empty_query_results for " << table->cf_name() << "\n";
                 return;
             }
             for (auto &row : *results) {
                 auto op = row.get_opt<int8_t>("cdc$operation");
                 if (op) {
-                    if (op.value() == 2) {
-                        auto key_and_value = convert(table, row); // send this data
+                    if (op.value() == 2) { // || op.value() == 1) { // INSERT and UPDATE
+                        auto key_and_value = convert(table, row, op.value());
 
                         seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
                         seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
@@ -158,15 +157,53 @@ void kafka_upload_service::on_timer() {
                             std::cout << "\n\nproblem producing: " << ex << "\n\n";
                         });
                         _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
-//                            arm_timer();
                             return std::move(f);
                         });
-                    }
+                    } else if (op.value() == 3) { // DELETE
+						// Code for delete goes here
+						// To delete, the value has to be null and the key should reflect which key is being deleted
+						auto key_and_value = convert(table, row, op.value());
+
+                        seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
+                        seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
+                        seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
+
+                        uint32_t key_schema_id = 466;
+                        seastar::sstring magic_key = "\0" + get_schema_id(key_schema_id);
+
+                        uint32_t val_schema_id = 467;
+                        seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
+
+                        std::cout << "\n\n\ntopic: " << topic << "\n";
+                        std::cout << "len: " << key.length() << "\nkey: ";
+                        std::cout << key << "\n\n";
+                        std::cout << "len: " << value.length() << "\nvalue: ";
+                        std::cout << value << "\n\n";
+
+                        auto f = _producer->produce(topic, magic_key + key, magic_val).handle_exception([] (auto ex) {
+                            std::cout << "\n\nproblem producing: " << ex << "\n\n";
+                        });
+                        _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
+                            return std::move(f);
+                        });
+					}
                 }
+				
+				auto timestamp = row.get_opt<timeuuid>("cdc$time");
+				std::cout << "\nApproaching timestamp: ";
+				if (timestamp) {
+					std::cout << "INSIDE!\n";
+					_last_seen_row_key[entry] = timestamp.value();
+				}
+				std::cout << "\n";
             }
         });
+		// TODO: Change last_seen_row to reflect where we left the replication
         //_last_seen_row_key[entry] = do_kafka_replicate(table, last_seen);
     }
+    _pending_queue = _pending_queue.then([this] () {
+        arm_timer();
+    });
 }
 
 sstring kafka_upload_service::kind_to_avro_type(abstract_type::kind kind) {
@@ -261,12 +298,18 @@ sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avr
                                  "\"namespace\":\"" + avro_namespace + "\","
                                  "\"fields\":[" + avro_fields + "]"
                                  "}");
+
+		if (avro_name != "key_schema") {
+			result = "[\"null\"," + result + "]";
+		}
+
         std::cout << "\n\nschema: " << result << "\n\n";
         return result;
- }
+}
 
 future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(schema_ptr table, timeuuid last_seen_key) {
     std::vector<query::clustering_range> bounds;
+
     auto lckp = clustering_key_prefix::from_single_value(*table, timeuuid_type->decompose(last_seen_key));
     auto lb = range_bound(lckp, false);
     auto rb_timestamp = std::chrono::system_clock::now() - std::chrono::seconds(10);
@@ -274,6 +317,7 @@ future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(sch
     auto rb = range_bound(rckp, true);
     bounds.push_back(query::clustering_range::make(lb, rb));
     auto selection = cql3::selection::selection::wildcard(table);
+
     query::column_id_vector static_columns, regular_columns;
     for (const column_definition& c : table->static_columns()) {
         static_columns.emplace_back(c.id);
@@ -281,9 +325,9 @@ future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(sch
     for (const column_definition& c : table->regular_columns()) {
         regular_columns.emplace_back(c.id);
     }
+
     auto opts = selection->get_query_options();
     auto partition_slice = query::partition_slice(std::move(bounds), std::move(static_columns), std::move(regular_columns), opts);
-    // db::timeout_clock::time_point timeout = db::timeout_clock::now + 10s;
     auto timeout = seastar::lowres_clock::now() + std::chrono::seconds(10);
     auto command = make_lw_shared<query::read_command> (
         table->id(),
@@ -291,6 +335,7 @@ future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(sch
         partition_slice);
     dht::partition_range_vector partition_ranges;
     partition_ranges.push_back(query::full_partition_range);
+
     return _proxy.query(
         table, 
         command, 
@@ -403,47 +448,70 @@ void kafka_upload_service::encode_union(avro::GenericDatum &un, const cql3::unty
     }
 }
 
-std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> kafka_upload_service::convert(schema_ptr schema, const cql3::untyped_result_set_row &row) {
+std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> kafka_upload_service::convert(schema_ptr schema, const cql3::untyped_result_set_row &row, int8_t operation) {
     auto key_schema = compose_key_schema_for(schema);
     auto value_schema = compose_value_schema_for(schema);
-    avro::ValidSchema compiledSchema;
-    compiledSchema = avro::compileJsonSchemaFromString(value_schema);
-    avro::ValidSchema keySchema = avro::compileJsonSchemaFromString(key_schema);
-    avro::OutputStreamPtr out = avro::memoryOutputStream();
+
+    avro::ValidSchema compiled_value_schema = avro::compileJsonSchemaFromString(value_schema);
+    avro::ValidSchema compiled_key_schema = avro::compileJsonSchemaFromString(key_schema);
+    avro::OutputStreamPtr out_value = avro::memoryOutputStream();
     avro::OutputStreamPtr out_key = avro::memoryOutputStream();
-    avro::EncoderPtr e = avro::validatingEncoder(compiledSchema, avro::binaryEncoder());
-    avro::EncoderPtr e_key = avro::validatingEncoder(keySchema, avro::binaryEncoder());
-    e->init(*out);
+    avro::EncoderPtr e_value = avro::validatingEncoder(compiled_value_schema, avro::binaryEncoder());
+    avro::EncoderPtr e_key = avro::validatingEncoder(compiled_key_schema, avro::binaryEncoder());
+
+    e_value->init(*out_value);
     e_key->init(*out_key);
-    avro::GenericDatum datum(compiledSchema);
-    avro::GenericDatum key_datum(keySchema);
+
+    avro::GenericDatum value_datum(compiled_value_schema);
+    avro::GenericDatum key_datum(compiled_key_schema);
+
     std::set <sstring> primary_key_columns;
-    for(const column_definition& cdef : schema->all_columns()){
+    for (const column_definition& cdef : schema->all_columns()) {
         if(cdef.is_primary_key()){
             primary_key_columns.insert(cdef.name_as_text());
         }
     }
-    if (datum.type() == avro::AVRO_RECORD) {
-        avro::GenericRecord &record = datum.value<avro::GenericRecord>();
+
+	if (key_datum.type() == avro::AVRO_RECORD) {
         avro::GenericRecord &keyRecord = key_datum.value<avro::GenericRecord>();
+            
         auto columns = schema->all_columns();
         for (auto &column : columns) {
             auto name = column.name_as_text();
 
-            abstract_type::kind kind = column.type->get_kind();
-            avro::GenericDatum &un = record.field(name);
-            encode_union(un, row, name, kind);
             if (primary_key_columns.count(name) > 0) {
+				abstract_type::kind kind = column.type->get_kind();
                 avro::GenericDatum &key_un = keyRecord.field(name);
                 encode_union(key_un, row, name, kind);
             }
         }
     }
-    avro::encode(*e,datum);
+
+	if (operation == 3) {
+		// value should be NULL
+		value_datum.selectBranch(0);
+	} else {
+		value_datum.selectBranch(1);
+
+		if (value_datum.type() == avro::AVRO_RECORD) {
+			avro::GenericRecord &valueRecord = value_datum.value<avro::GenericRecord>();
+
+			auto columns = schema->all_columns();
+			for (auto &column : columns) {
+				auto name = column.name_as_text();
+
+				abstract_type::kind kind = column.type->get_kind();
+				avro::GenericDatum &value_un = valueRecord.field(name);
+				encode_union(value_un, row, name, kind);
+			}
+		}
+	}
+
+    avro::encode(*e_value, value_datum);
     avro::encode(*e_key, key_datum);
-    e->flush();
+    e_value->flush();
     e_key->flush();
-    auto v = avro::snapshot(*out);
+    auto v = avro::snapshot(*out_value);
     auto k = avro::snapshot(*out_key);
 
     return std::make_pair(k, v);

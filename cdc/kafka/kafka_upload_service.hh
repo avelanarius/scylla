@@ -74,7 +74,7 @@ class kafka_upload_service final {
 
     future<lw_shared_ptr<cql3::untyped_result_set>> select(schema_ptr table, timeuuid last_seen_key);
 
-    std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> convert(schema_ptr schema, const cql3::untyped_result_set_row &row);
+    std::pair<std::shared_ptr<std::vector<uint8_t>>,std::shared_ptr<std::vector<uint8_t>>> convert(schema_ptr schema, const cql3::untyped_result_set_row &row, int8_t operation);
 
     std::vector<std::pair<schema_ptr, schema_ptr>> get_cdc_tables();
 
