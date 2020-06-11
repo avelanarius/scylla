@@ -127,7 +127,7 @@ void kafka_upload_service::on_timer() {
         }
         // Create Kafka topic and schema
         auto last_seen = _last_seen_row_key[entry];
-        auto result = select(tables.second, last_seen).then([this, &entry, table = tables.first] (lw_shared_ptr<cql3::untyped_result_set> results) {
+        auto result = select(tables.second, last_seen).then([this, entry, table = tables.first] (lw_shared_ptr<cql3::untyped_result_set> results) {
             if (!results) {
                 std::cout << "empty_query_results for " << table->cf_name() << "\n";
                 return;
@@ -135,7 +135,7 @@ void kafka_upload_service::on_timer() {
             for (auto &row : *results) {
                 auto op = row.get_opt<int8_t>("cdc$operation");
                 if (op) {
-                    if (op.value() == 2) { // || op.value() == 1) { // INSERT and UPDATE
+                    if (op.value() == 2 || op.value() == 1) { // INSERT and UPDATE
                         auto key_and_value = convert(table, row, op.value());
 
                         seastar::sstring value { key_and_value.second->begin(), key_and_value.second->end() };
@@ -193,8 +193,10 @@ void kafka_upload_service::on_timer() {
 				auto timestamp = row.get_opt<timeuuid>("cdc$time");
 				std::cout << "\nApproaching timestamp: ";
 				if (timestamp) {
-					std::cout << "INSIDE!\n";
-					_last_seen_row_key[entry] = timestamp.value();
+					if (timestamp.value() > _last_seen_row_key[entry]) {
+						std::cout << "INSIDE! \n" << timestamp.value();
+						_last_seen_row_key[entry] = timestamp.value();
+					}
 				}
 				std::cout << "\n";
             }
@@ -310,6 +312,8 @@ sstring kafka_upload_service::compose_avro_schema(sstring avro_name, sstring avr
 
 future<lw_shared_ptr<cql3::untyped_result_set>> kafka_upload_service::select(schema_ptr table, timeuuid last_seen_key) {
     std::vector<query::clustering_range> bounds;
+
+	std::cout << "\nLast Seen: " << last_seen_key << "\n";
 
     auto lckp = clustering_key_prefix::from_single_value(*table, timeuuid_type->decompose(last_seen_key));
     auto lb = range_bound(lckp, false);
