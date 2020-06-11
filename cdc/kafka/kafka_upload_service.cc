@@ -54,8 +54,7 @@ kafka_upload_service::kafka_upload_service(service::storage_proxy& proxy, auth::
     kafka4seastar::producer_properties properties;
     properties._client_id = "cdc_replication_service";
     properties._servers = {
-            {"172.20.0.2", 9092}
-//            {"172.20.0.3", 9092}
+            {"localhost", 9092}
     };
 
     _proxy.set_kafka_upload_service(this);
@@ -143,10 +142,10 @@ void kafka_upload_service::on_timer() {
                         seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
                         seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
 
-                        uint32_t key_schema_id = 324;
+                        uint32_t key_schema_id = 1;
                         seastar::sstring magic_key = "\0" + get_schema_id(key_schema_id);
 
-                        uint32_t val_schema_id = 323;
+                        uint32_t val_schema_id = 1;
                         seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
 
                         std::cout << "\n\n\ntopic: " << topic << "\n";
@@ -155,7 +154,7 @@ void kafka_upload_service::on_timer() {
                         std::cout << "len: " << value.length() << "\nvalue: ";
                         std::cout << value << "\n\n";
 
-                        auto f = _producer->produce(topic, magic_key + key, magic_val + value).handle_exception([] (auto ex) {
+                        auto f = _producer->produce("topik2", magic_key + key, magic_val + value).handle_exception([] (auto ex) {
                             std::cout << "\n\nproblem producing: " << ex << "\n\n";
                         });
                         _pending_queue = _pending_queue.then([this, f = std::move(f)] () mutable {
