@@ -141,10 +141,10 @@ void kafka_upload_service::on_timer() {
                         seastar::sstring key { key_and_value.first->begin(), key_and_value.first->end() };
                         seastar::sstring topic { table->cf_name().begin(), table->cf_name().end() };
 
-                        uint32_t key_schema_id = 1;
+                        uint32_t key_schema_id = 4;
                         seastar::sstring magic_key = "\0" + get_schema_id(key_schema_id);
 
-                        uint32_t val_schema_id = 1;
+                        uint32_t val_schema_id = 3;
                         seastar::sstring magic_val = "\0" + get_schema_id(val_schema_id);
 
                         std::cout << "\n\n\ntopic: " << topic << "\n";
