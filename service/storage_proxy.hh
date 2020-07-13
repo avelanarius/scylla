@@ -92,8 +92,8 @@ namespace cdc {
     class cdc_service;    
 }
 
-namespace cdc::kafka {
-    class kafka_upload_service;
+namespace cdc::kafka_replication {
+    class kafka_replication_service;
 }
 
 namespace service {
@@ -301,7 +301,7 @@ private:
 
     cdc::cdc_service* _cdc = nullptr;
     cdc_stats _cdc_stats;
-    cdc::kafka::kafka_upload_service* _kafka_upload_service = nullptr;
+    cdc::kafka_replication::kafka_replication_service* _kafka_replication_service = nullptr;
 private:
     future<> uninit_messaging_service();
     future<coordinator_query_result> query_singular(lw_shared_ptr<query::read_command> cmd,
@@ -445,11 +445,11 @@ public:
         return _cdc;
     }
 
-    void set_kafka_upload_service(cdc::kafka::kafka_upload_service* upload_service) {
-        _kafka_upload_service = upload_service;
+    void set_kafka_replication_service(cdc::kafka_replication::kafka_replication_service* upload_service) {
+        _kafka_replication_service = upload_service;
     }
-    cdc::kafka::kafka_upload_service* get_kafka_upload_service() const {
-        return _kafka_upload_service;
+    cdc::kafka_replication::kafka_replication_service* get_kafka_replication_service() const {
+        return _kafka_replication_service;
     }
 
     view_update_handlers_list& get_view_update_handlers_list() {

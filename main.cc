@@ -78,7 +78,7 @@
 #include "cdc/log.hh"
 #include "cdc/cdc_extension.hh"
 #include "alternator/tags_extension.hh"
-#include "cdc/kafka/kafka_upload_service.hh"
+#include "cdc/kafka-replication/kafka_replication_service.hh"
 
 namespace fs = std::filesystem;
 
@@ -1141,10 +1141,10 @@ int main(int ac, char** av) {
                 ss.register_client_shutdown_hook("alternator", std::move(stop_alternator));
             }
 
-            static sharded<cdc::kafka::kafka_upload_service> kafka_upload_service;
-            kafka_upload_service.start(std::ref(proxy), std::ref(auth_service)).get();
-            auto stop_kafka_upload_service = defer_verbose_shutdown("kafka_upload_service", [] {
-                kafka_upload_service.stop().get();
+            static sharded<cdc::kafka_replication::kafka_replication_service> kafka_replication_service;
+            kafka_replication_service.start(std::ref(proxy), std::ref(auth_service)).get();
+            auto stop_kafka_replication_service = defer_verbose_shutdown("kafka_replication_service", [] {
+                kafka_replication_service.stop().get();
             });
 
             static redis_service redis;
