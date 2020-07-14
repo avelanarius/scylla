@@ -17,7 +17,7 @@
 	url = ../zstd
 [submodule "seastar-kafka-client"]
 	path = seastar-kafka-client
-	url = ../seastar-kafka-client
+	url = https://github.com/haaawk/seastar-kafka-client.git
 [submodule "avro"]
 	path = avro
 	url = https://github.com/apache/avro.git

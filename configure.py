@@ -441,7 +441,7 @@ arg_parser.add_argument('--mode', action='append', choices=list(modes.keys()), d
 arg_parser.add_argument('--with', dest='artifacts', action='append', choices=all_artifacts, default=[])
 arg_parser.add_argument('--cflags', action='store', dest='user_cflags', default='',
                         help='Extra flags for the C++ compiler')
-arg_parser.add_argument('--ldflags', action='store', dest='user_ldflags', default='/home/scylla/build/dev/seastar/libseastar.a',
+arg_parser.add_argument('--ldflags', action='store', dest='user_ldflags', default='',
                         help='Extra flags for the linker')
 arg_parser.add_argument('--target', action='store', dest='target', default=default_target_arch(),
                         help='Target architecture (-march)')
@@ -478,13 +478,13 @@ arg_parser.add_argument('--enable-alloc-failure-injector', dest='alloc_failure_i
 arg_parser.add_argument('--with-antlr3', dest='antlr3_exec', action='store', default=None,
                         help='path to antlr3 executable')
 arg_parser.add_argument('--with-ragel', dest='ragel_exec', action='store', default='ragel',
-                        help='path to ragel executable')
+        help='path to ragel executable')
 add_tristate(arg_parser, name='stack-guards', dest='stack_guards', help='Use stack guards')
 args = arg_parser.parse_args()
 
 defines = ['XXH_PRIVATE_API',
            'SEASTAR_TESTING_MAIN',
-           ]
+]
 
 extra_cxxflags = {}
 
@@ -551,8 +551,6 @@ scylla_core = (['database.cc',
                 'cdc/split.cc',
                 'cdc/generation.cc',
                 'cdc/metadata.cc',
-                'cdc/kafka-replication/kafka_replication_service.cc',
-                'cdc/kafka-replication/avro_row_serializer.cc',
                 'cql3/type_json.cc',
                 'cql3/abstract_marker.cc',
                 'cql3/attributes.cc',
@@ -826,38 +824,38 @@ api = ['api/api.cc',
        'api/system.cc',
        'api/config.cc',
        'api/api-doc/config.json',
-       'api/error_injection.cc',
-       'api/api-doc/error_injection.json',
+        'api/error_injection.cc',
+        'api/api-doc/error_injection.json',
        ]
 
 alternator = [
-    'alternator/server.cc',
-    'alternator/executor.cc',
-    'alternator/stats.cc',
-    'alternator/base64.cc',
-    'alternator/serialization.cc',
-    'alternator/expressions.cc',
-    Antlr3Grammar('alternator/expressions.g'),
-    'alternator/conditions.cc',
-    'alternator/rjson.cc',
-    'alternator/auth.cc',
+       'alternator/server.cc',
+       'alternator/executor.cc',
+       'alternator/stats.cc',
+       'alternator/base64.cc',
+       'alternator/serialization.cc',
+       'alternator/expressions.cc',
+       Antlr3Grammar('alternator/expressions.g'),
+       'alternator/conditions.cc',
+       'alternator/rjson.cc',
+       'alternator/auth.cc',
 ]
 
 redis = [
-    'redis/service.cc',
-    'redis/server.cc',
-    'redis/query_processor.cc',
-    'redis/protocol_parser.rl',
-    'redis/keyspace_utils.cc',
-    'redis/options.cc',
-    'redis/stats.cc',
-    'redis/mutation_utils.cc',
-    'redis/query_utils.cc',
-    'redis/abstract_command.cc',
-    'redis/command_factory.cc',
-    'redis/commands.cc',
-    'redis/lolwut.cc',
-]
+        'redis/service.cc',
+        'redis/server.cc',
+        'redis/query_processor.cc',
+        'redis/protocol_parser.rl',
+        'redis/keyspace_utils.cc',
+        'redis/options.cc',
+        'redis/stats.cc',
+        'redis/mutation_utils.cc',
+        'redis/query_utils.cc',
+        'redis/abstract_command.cc',
+        'redis/command_factory.cc',
+        'redis/commands.cc',
+        'redis/lolwut.cc',
+        ]
 
 idls = ['idl/gossip_digest.idl.hh',
         'idl/uuid.idl.hh',
@@ -1306,6 +1304,11 @@ def configure_avro(build_dir, mode):
     os.makedirs(avro_build_dir, exist_ok=True)
     subprocess.check_call(avro_cmd, shell=False, cwd=avro_build_dir)
 
+submodule_include_paths = [
+    'seastar-kafka-client/include',
+]
+
+args.user_cflags += ' ' + ' '.join(['-I' + os.path.abspath(p) for p in submodule_include_paths])
 
 args.user_cflags += " " + pkg_config('jsoncpp', '--cflags')
 args.user_cflags += ' -march=' + args.target
@@ -1574,7 +1577,7 @@ with open(buildfile_tmp, 'w') as f:
         f.write('build {}: run {}\n'.format('$builddir/' + mode + '/gen/utils/gz/crc_combine_table.cc',
                                             '$builddir/' + mode + '/utils/gz/gen_crc_combine_table'))
         f.write('build {}: link_build.{} {}\n'.format('$builddir/' + mode + '/utils/gz/gen_crc_combine_table', mode,
-                                                      '$builddir/' + mode + '/utils/gz/gen_crc_combine_table.o'))
+                                                '$builddir/' + mode + '/utils/gz/gen_crc_combine_table.o'))
         f.write('   libs = $seastar_libs_{}\n'.format(mode))
         f.write(
             'build {mode}-objects: phony {objs}\n'.format(
@@ -1647,7 +1650,7 @@ with open(buildfile_tmp, 'w') as f:
         f.write(f'build build/{mode}/gen/empty.cc: gen\n')
         for hh in headers:
             f.write('build $builddir/{mode}/{hh}.o: checkhh.{mode} {hh} | build/{mode}/gen/empty.cc || {gen_headers_dep}\n'.format(
-                mode=mode, hh=hh, gen_headers_dep=gen_headers_dep))
+                    mode=mode, hh=hh, gen_headers_dep=gen_headers_dep))
 
         f.write('build build/{mode}/seastar/libseastar.a: ninja | always\n'
                 .format(**locals()))
@@ -1682,7 +1685,7 @@ with open(buildfile_tmp, 'w') as f:
         f.write('  pool = submodule_pool\n')
         f.write('  subdir = build/{mode}/avro\n'.format(**locals()))
         f.write('  target = avrocpp_s\n'.format(**locals()))
-        f.write('build build/{mode}/seastar-kafka-client/libkafka4seastar.a: ninja | always\n'.format(**locals()))
+        f.write('build build/{mode}/seastar-kafka-client/libkafka4seastar.a: ninja\n'.format(**locals()))
         f.write('  pool = submodule_pool\n')
         f.write('  subdir = build/{mode}/seastar-kafka-client\n'.format(**locals()))
         f.write('  target = kafka4seastar\n'.format(**locals()))
@@ -1691,10 +1694,10 @@ with open(buildfile_tmp, 'w') as f:
     f.write('build checkheaders: phony || {}\n'.format(' '.join(['$builddir/{}/{}.o'.format(mode, hh) for hh in headers])))
 
     f.write(
-        'build test: phony {}\n'.format(' '.join(['{mode}-test'.format(mode=mode) for mode in modes]))
+            'build test: phony {}\n'.format(' '.join(['{mode}-test'.format(mode=mode) for mode in modes]))
     )
     f.write(
-        'build check: phony {}\n'.format(' '.join(['{mode}-check'.format(mode=mode) for mode in modes]))
+            'build check: phony {}\n'.format(' '.join(['{mode}-check'.format(mode=mode) for mode in modes]))
     )
 
     f.write(textwrap.dedent('''\
