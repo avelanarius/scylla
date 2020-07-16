@@ -751,6 +751,16 @@ db::config::config(std::shared_ptr<db::extensions> exts)
         "\t'datacenter_name':N [,...], (Default: 'dc1:1') IFF the class is NetworkTopologyStrategy, assign replication factors to each data center in a comma separated list.\n"
         "\n"
         "Related information: About replication strategy.")
+    /* kafka_replication_service settings. */
+    , kafka_replication_keyspace(this, "kafka_replication_keyspace", value_status::Used, "",
+        "Keyspace name of the table to be replicated.")
+    , kafka_replication_column_family(this, "kafka_replication_column_family", value_status::Used, "",
+        "Name of the replicated table.")
+    , kafka_replication_broker_addresses(this, "kafka_replication_broker_addresses", value_status::Used, { },
+        "List of replication target cluster's broker addresses.")
+    , kafka_replication_key_schema_id(this, "kafka_replication_key_schema_id", value_status::Used, 1, "Schema registry id of the message key's schema.")
+    , kafka_replication_value_schema_id(this, "kafka_replication_value_schema_id", value_status::Used, 2, "Schema registry id of the message value's schema.")
+
 
     , default_log_level(this, "default_log_level", value_status::Used)
     , logger_log_level(this, "logger_log_level", value_status::Used)
@@ -914,11 +924,11 @@ std::unordered_map<sstring, db::experimental_features_t::feature> db::experiment
     // https://github.com/scylladb/scylla/pull/5369#discussion_r353614807
     // Lightweight transactions are no longer experimental. Map them
     // to UNUSED switch for a while, then remove altogether.
-    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", CDC}};
+    return {{"lwt", UNUSED}, {"udf", UDF}, {"cdc", CDC}, {"kafka_replication_service", KAFKA_REPLICATION_SERVICE}};
 }
 
 std::vector<enum_option<db::experimental_features_t>> db::experimental_features_t::all() {
-    return {UDF, CDC};
+    return {UDF, CDC, KAFKA_REPLICATION_SERVICE};
 }
 
 template struct utils::config_file::named_value<seastar::log_level>;

@@ -24,6 +24,7 @@
 
 #include <iomanip>
 
+#include "db/config.hh"
 #include "database.hh"
 #include "kafka_replication_service.hh"
 #include "avro_row_serializer.hh"
@@ -51,9 +52,12 @@ kafka_replication_service::kafka_replication_service(service::storage_proxy& pro
 , _pending_queue(seastar::make_ready_future<>()) {
     kafka4seastar::producer_properties properties;
     properties.client_id = "cdc_replication_service";
-    properties.servers = {
-            {"127.0.0.1", 9092}
-    };
+    const auto &cfg = proxy.get_db().local().get_config();
+    const auto &args = cfg.kafka_replication_broker_addresses();
+    properties.servers = {};
+    std::transform(args.begin(), args.end(), std::inserter(properties.servers, properties.servers.begin())
+            , [](sstring s) -> std::pair<seastar::sstring, uint16_t>{return std::make_pair(s.substr(0, s.find(':')), std::stoul(s.substr(s.find(':') + 1, sstring::npos)));});
+
 
     _proxy.set_kafka_replication_service(this);
 
@@ -85,6 +89,7 @@ void kafka_replication_service::arm_timer() {
 
 std::vector<kafka_replication_service::replicated_table> kafka_replication_service::list_replicated_tables() {
     auto tables = _proxy.get_db().local().get_column_families();
+    const auto &cfg = _proxy.get_db().local().get_config();
 
     std::vector<kafka_replication_service::replicated_table> cdc_tables;
     for (auto& [id, table] : tables) {
@@ -92,7 +97,11 @@ std::vector<kafka_replication_service::replicated_table> kafka_replication_servi
         if (schema->cdc_options().enabled()) {
             auto base_table_schema = _proxy.get_db().local().find_schema(schema->ks_name(), schema->cf_name());
             auto cdc_table_schema = _proxy.get_db().local().find_schema(schema->ks_name(), schema->cf_name() + "_scylla_cdc_log");
-            cdc_tables.push_back({base_table_schema, cdc_table_schema});
+            if(base_table_schema->ks_name() != cfg.kafka_replication_keyspace()
+               || base_table_schema->cf_name() != cfg.kafka_replication_column_family()) {
+                continue;
+            }
+            cdc_tables.push_back({base_table_schema, cdc_table_schema, cfg.kafka_replication_key_schema_id(), cfg.kafka_replication_value_schema_id()});
         }
     }
 

@@ -55,6 +55,7 @@ constexpr std::string_view features::NONFROZEN_UDTS = "NONFROZEN_UDTS";
 constexpr std::string_view features::HINTED_HANDOFF_SEPARATE_CONNECTION = "HINTED_HANDOFF_SEPARATE_CONNECTION";
 constexpr std::string_view features::LWT = "LWT";
 constexpr std::string_view features::PER_TABLE_PARTITIONERS = "PER_TABLE_PARTITIONERS";
+constexpr std::string_view features::KAFKA_REPLICATION_SERVICE = "KAFKA_REPLICATION_SERVICE";
 
 static logging::logger logger("features");
 
@@ -88,7 +89,8 @@ feature_service::feature_service(feature_config cfg) : _config(cfg)
         , _nonfrozen_udts(*this, features::NONFROZEN_UDTS)
         , _hinted_handoff_separate_connection(*this, features::HINTED_HANDOFF_SEPARATE_CONNECTION)
         , _lwt_feature(*this, features::LWT)
-        , _per_table_partitioners_feature(*this, features::PER_TABLE_PARTITIONERS) {
+        , _per_table_partitioners_feature(*this, features::PER_TABLE_PARTITIONERS)
+        , _kafka_replication_service_feature(*this, features::KAFKA_REPLICATION_SERVICE){
 }
 
 feature_config feature_config_from_db_config(db::config& cfg) {
@@ -108,6 +110,10 @@ feature_config feature_config_from_db_config(db::config& cfg) {
 
     if (cfg.check_experimental(db::experimental_features_t::CDC)) {
         fcfg.enable_cdc = true;
+    }
+
+    if (cfg.check_experimental(db::experimental_features_t::KAFKA_REPLICATION_SERVICE)) {
+        fcfg.enable_kafka_replication_service = true;
     }
 
     return fcfg;
@@ -173,6 +179,9 @@ std::set<std::string_view> feature_service::known_feature_set() {
     }
     if (_config.enable_cdc) {
         features.insert(gms::features::CDC);
+    }
+    if (_config.enable_kafka_replication_service){
+        features.insert(gms::features::KAFKA_REPLICATION_SERVICE);
     }
     features.insert(gms::features::LWT);
 
@@ -254,6 +263,7 @@ void feature_service::enable(const std::set<std::string_view>& list) {
         std::ref(_hinted_handoff_separate_connection),
         std::ref(_lwt_feature),
         std::ref(_per_table_partitioners_feature),
+        std::ref(_kafka_replication_service_feature),
     })
     {
         if (list.count(f.name())) {

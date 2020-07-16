@@ -41,6 +41,7 @@ struct feature_config {
     bool enable_sstables_mc_format = false;
     bool enable_user_defined_functions = false;
     bool enable_cdc = false;
+    bool enable_kafka_replication_service = false;
     std::set<sstring> disabled_features;
     feature_config();
 };
@@ -96,6 +97,7 @@ private:
     gms::feature _hinted_handoff_separate_connection;
     gms::feature _lwt_feature;
     gms::feature _per_table_partitioners_feature;
+    gms::feature _kafka_replication_service_feature;
 
 public:
     bool cluster_supports_range_tombstones() const {
@@ -203,6 +205,10 @@ public:
 
     bool cluster_supports_lwt() const {
         return bool(_lwt_feature);
+    }
+
+    bool cluster_supports_kafka_replication_service() const {
+        return bool(_kafka_replication_service_feature);
     }
 };
 
