@@ -90,7 +90,7 @@ feature_service::feature_service(feature_config cfg) : _config(cfg)
         , _hinted_handoff_separate_connection(*this, features::HINTED_HANDOFF_SEPARATE_CONNECTION)
         , _lwt_feature(*this, features::LWT)
         , _per_table_partitioners_feature(*this, features::PER_TABLE_PARTITIONERS)
-        , _kafka_replication_service_feature(*this, features::KAFKA_REPLICATION_SERVICE){
+        , _kafka_replication_service_feature(*this, features::KAFKA_REPLICATION_SERVICE) {
 }
 
 feature_config feature_config_from_db_config(db::config& cfg) {
@@ -180,7 +180,7 @@ std::set<std::string_view> feature_service::known_feature_set() {
     if (_config.enable_cdc) {
         features.insert(gms::features::CDC);
     }
-    if (_config.enable_kafka_replication_service){
+    if (_config.enable_kafka_replication_service) {
         features.insert(gms::features::KAFKA_REPLICATION_SERVICE);
     }
     features.insert(gms::features::LWT);
