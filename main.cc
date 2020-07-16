@@ -1141,13 +1141,14 @@ int main(int ac, char** av) {
                 ss.register_client_shutdown_hook("alternator", std::move(stop_alternator));
             }
 
+            static sharded<cdc::kafka_replication::kafka_replication_service> kafka_replication_service;
             if(feature_service.local().cluster_supports_kafka_replication_service()) {
-                static sharded<cdc::kafka_replication::kafka_replication_service> kafka_replication_service;
                 kafka_replication_service.start(std::ref(proxy), std::ref(auth_service)).get();
-                auto stop_kafka_replication_service = defer_verbose_shutdown("kafka_replication_service", [] {
-                    kafka_replication_service.stop().get();
-                });
             }
+            auto stop_kafka_replication_service = defer_verbose_shutdown("kafka_replication_service", [] {
+                kafka_replication_service.stop().get();
+            });
+            
 
             static redis_service redis;
             if (cfg->redis_port() || cfg->redis_ssl_port()) {
