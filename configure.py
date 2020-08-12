@@ -1203,6 +1203,7 @@ seastar_ldflags = args.user_ldflags
 libdeflate_cflags = seastar_cflags
 zstd_cflags = seastar_cflags + ' -Wno-implicit-fallthrough'
 avro_cflags = seastar_cflags
+kafka4seastar_cflags = seastar_cflags
 
 MODE_TO_CMAKE_BUILD_TYPE = {'release' : 'RelWithDebInfo', 'debug' : 'Debug', 'dev' : 'Dev', 'sanitize' : 'Sanitize' }
 
@@ -1304,6 +1305,11 @@ def configure_avro(build_dir, mode):
     os.makedirs(avro_build_dir, exist_ok=True)
     subprocess.check_call(avro_cmd, shell=False, cwd=avro_build_dir)
 
+submodule_include_paths = [
+    'seastar-kafka-client/include',
+]
+
+args.user_cflags += ' ' + ' '.join(['-I' + os.path.abspath(p) for p in submodule_include_paths])
 
 args.user_cflags += " " + pkg_config('jsoncpp', '--cflags')
 args.user_cflags += ' -march=' + args.target
@@ -1363,6 +1369,27 @@ else:
 for mode in build_modes:
     configure_zstd(outdir, mode)
     configure_avro(outdir, mode)
+
+def configure_kafka4seastar(build_dir, mode):
+    k4s_build_dir = os.path.join(build_dir, mode, 'seastar-kafka-client')
+
+    k4s_cmake_args = [
+        '-DCMAKE_BUILD_TYPE={}'.format(MODE_TO_CMAKE_BUILD_TYPE[mode]),
+        '-DCMAKE_C_COMPILER={}'.format(args.cc),
+        '-DCMAKE_CXX_COMPILER={}'.format(args.cxx),
+        '-DCMAKE_C_FLAGS={}'.format(kafka4seastar_cflags),
+        '-DCMAKE_PREFIX_PATH={}'.format(os.path.abspath('') + '/' + os.path.join(build_dir, mode, 'seastar')),
+        '-DCMAKE_MODULE_PATH={}'.format(os.path.abspath('') + '/' + 'seastar/cmake'),
+    ]
+
+    k4s_cmd = ['cmake', '-G', 'Ninja', os.path.relpath('seastar-kafka-client', k4s_build_dir)] + k4s_cmake_args
+
+    print(k4s_cmd)
+    os.makedirs(k4s_build_dir, exist_ok=True)
+    subprocess.check_call(k4s_cmd, shell=False, cwd=k4s_build_dir)
+
+for mode in build_modes:
+    configure_kafka4seastar(outdir, mode)
 
 # configure.py may run automatically from an already-existing build.ninja.
 # If the user interrupts configure.py in the middle, we need build.ninja
@@ -1502,6 +1529,7 @@ with open(buildfile_tmp, 'w') as f:
                     'libdeflate/libdeflate.a',
                     'zstd/lib/libzstd.a',
                     'avro/libavrocpp_s.a',
+                    'seastar-kafka-client/libkafka4seastar.a',
                 ]])
                 objs.append('$builddir/' + mode + '/gen/utils/gz/crc_combine_table.o')
                 if binary in tests:
@@ -1658,6 +1686,10 @@ with open(buildfile_tmp, 'w') as f:
         f.write('  pool = submodule_pool\n')
         f.write('  subdir = build/{mode}/avro\n'.format(**locals()))
         f.write('  target = avrocpp_s\n'.format(**locals()))
+        f.write('build build/{mode}/seastar-kafka-client/libkafka4seastar.a: ninja\n'.format(**locals()))
+        f.write('  pool = submodule_pool\n')
+        f.write('  subdir = build/{mode}/seastar-kafka-client\n'.format(**locals()))
+        f.write('  target = kafka4seastar\n'.format(**locals()))
 
     mode = 'dev' if 'dev' in modes else modes[0]
     f.write('build checkheaders: phony || {}\n'.format(' '.join(['$builddir/{}/{}.o'.format(mode, hh) for hh in headers])))
