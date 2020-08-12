@@ -1141,6 +1141,36 @@ int main(int ac, char** av) {
                 ss.register_client_shutdown_hook("alternator", std::move(stop_alternator));
             }
 
+            static sharded<cdc::kafka_replication::kafka_replication_service> kafka_replication_service;
+            if (cfg->check_experimental(db::experimental_features_t::KAFKA_REPLICATION_SERVICE)) {
+                if (cfg->kafka_replication_broker_addresses().empty()) {
+                    startlog.error("Bad configuration: empty 'kafka_replication_broker_addresses'");
+                    throw bad_configuration_error();
+                }
+                if (cfg->kafka_replication_keyspace().empty()) {
+                    startlog.error("Bad configuration: 'kafka_replication_keyspace' not specified");
+                    throw bad_configuration_error();
+                }
+                if (cfg->kafka_replication_column_family().empty()) {
+                    startlog.error("Bad configuration: 'kafka_replication_column_family' not specified");
+                    throw bad_configuration_error();
+                }
+                // Confluent Platform Schema Registry Schema IDs start from 1
+                if (cfg->kafka_replication_key_schema_id() == 0) {
+                    startlog.error("Bad configuration: 'kafka_replication_key_schema_id' not specified");
+                    throw bad_configuration_error();
+                }
+                if (cfg->kafka_replication_value_schema_id() == 0) {
+                    startlog.error("Bad configuration: 'kafka_replication_value_schema_id' not specified");
+                    throw bad_configuration_error();
+                }
+                kafka_replication_service.start(std::ref(proxy), std::ref(auth_service)).get();
+            }
+            auto stop_kafka_replication_service = defer_verbose_shutdown("kafka_replication_service", [] {
+                kafka_replication_service.stop().get();
+            });
+            
+
             static redis_service redis;
             if (cfg->redis_port() || cfg->redis_ssl_port()) {
                 redis.init(std::ref(proxy), std::ref(db), std::ref(auth_service), *cfg).get();

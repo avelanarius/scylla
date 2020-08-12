@@ -81,7 +81,7 @@ namespace db {
 
 /// Enumeration of all valid values for the `experimental` config entry.
 struct experimental_features_t {
-    enum feature { UNUSED, UDF, CDC };
+    enum feature { UNUSED, UDF, CDC, KAFKA_REPLICATION_SERVICE };
     static std::unordered_map<sstring, feature> map(); // See enum_option.
     static std::vector<enum_option<experimental_features_t>> all();
 };
@@ -322,6 +322,12 @@ public:
     named_value<sstring> redis_write_consistency_level;
     named_value<uint16_t> redis_database_count;
     named_value<string_map> redis_keyspace_replication_strategy_options;
+
+    named_value<sstring> kafka_replication_keyspace;
+    named_value<sstring> kafka_replication_column_family;
+    named_value<string_list> kafka_replication_broker_addresses;
+    named_value<uint32_t> kafka_replication_key_schema_id;
+    named_value<uint32_t> kafka_replication_value_schema_id;
 
     seastar::logging_settings logging_settings(const boost::program_options::variables_map&) const;
 
