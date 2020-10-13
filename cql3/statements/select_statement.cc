@@ -542,10 +542,14 @@ indexed_table_select_statement::do_execute_base_query(
                 if (old_paging_state->get_clustering_key() && _schema->clustering_key_size() > 0) {
                     auto base_ck = generate_base_key_from_index_pk<clustering_key>(old_paging_state->get_partition_key(),
                             old_paging_state->get_clustering_key(), *_schema, *_view_schema);
-                    command->slice.set_range(*_schema, base_pk,
-                            std::vector<query::clustering_range>{query::clustering_range::make_starting_with(range_bound<clustering_key>(base_ck, false))});
+
+                    auto row_ranges = command->slice.default_row_ranges();
+                    query::trim_clustering_row_ranges_to(*_schema, row_ranges, base_ck, false);
+                    command->slice.set_range(*_schema, base_pk, row_ranges);
                 } else {
-                    command->slice.set_range(*_schema, base_pk, std::vector<query::clustering_range>{query::clustering_range::make_open_ended_both_sides()});
+                    // If there are none _specific_ranges, the entire partition range
+                    // will be read.
+                    assert(!command->slice.get_specific_ranges());
                 }
             }
             concurrency *= 2;
@@ -992,7 +996,11 @@ indexed_table_select_statement::do_execute(service::storage_proxy& proxy,
             // page size is set to the internal count page size, regardless of the user-provided value
             internal_options.reset(new cql3::query_options(std::move(internal_options), options.get_paging_state(), DEFAULT_COUNT_PAGE_SIZE));
             return repeat([this, &builder, &options, &internal_options, &proxy, &state, now, whole_partitions, partition_slices, restrictions_need_filtering] () {
-                auto consume_results = [this, &builder, &options, &internal_options, restrictions_need_filtering] (foreign_ptr<lw_shared_ptr<query::result>> results, lw_shared_ptr<query::read_command> cmd) {
+                auto consume_results = [this, &builder, &options, &internal_options, &proxy, &state, restrictions_need_filtering] (foreign_ptr<lw_shared_ptr<query::result>> results, lw_shared_ptr<query::read_command> cmd, lw_shared_ptr<const service::pager::paging_state> paging_state) {
+                    if (paging_state) {
+                        paging_state = generate_view_paging_state_from_base_query_results(paging_state, results, proxy, state, options);
+                    }
+                    internal_options.reset(new cql3::query_options(std::move(internal_options), paging_state ? make_lw_shared<service::pager::paging_state>(*paging_state) : nullptr));
                     if (restrictions_need_filtering) {
                         _stats.filtered_rows_read_total += *results->row_count();
                         query::result_view::consume(*results, cmd->slice, cql3::selection::result_set_builder::visitor(builder, *_schema, *_selection,
@@ -1000,23 +1008,28 @@ indexed_table_select_statement::do_execute(service::storage_proxy& proxy,
                     } else {
                         query::result_view::consume(*results, cmd->slice, cql3::selection::result_set_builder::visitor(builder, *_schema, *_selection));
                     }
+                    return paging_state;
                 };
 
                 if (whole_partitions || partition_slices) {
                     return find_index_partition_ranges(proxy, state, *internal_options).then_unpack(
                             [this, now, &state, &internal_options, &proxy, consume_results = std::move(consume_results)] (dht::partition_range_vector partition_ranges, lw_shared_ptr<const service::pager::paging_state> paging_state) {
-                        bool has_more_pages = paging_state && paging_state->get_remaining() > 0;
-                        internal_options.reset(new cql3::query_options(std::move(internal_options), paging_state ? make_lw_shared<service::pager::paging_state>(*paging_state) : nullptr));
-                        return do_execute_base_query(proxy, std::move(partition_ranges), state, *internal_options, now, std::move(paging_state)).then_unpack(consume_results).then([has_more_pages] {
+                        return do_execute_base_query(proxy, std::move(partition_ranges), state, *internal_options, now, paging_state)
+                        .then_unpack([paging_state, consume_results = std::move(consume_results)](foreign_ptr<lw_shared_ptr<query::result>> results, lw_shared_ptr<query::read_command> cmd) {
+                            return consume_results(std::move(results), cmd, std::move(paging_state));
+                        }).then([](lw_shared_ptr<const service::pager::paging_state> paging_state) {
+                            bool has_more_pages = paging_state && paging_state->get_remaining() > 0;
                             return stop_iteration(!has_more_pages);
                         });
                     });
                 } else {
                     return find_index_clustering_rows(proxy, state, *internal_options).then_unpack(
                             [this, now, &state, &internal_options, &proxy, consume_results = std::move(consume_results)] (std::vector<primary_key> primary_keys, lw_shared_ptr<const service::pager::paging_state> paging_state) {
-                        bool has_more_pages = paging_state && paging_state->get_remaining() > 0;
-                        internal_options.reset(new cql3::query_options(std::move(internal_options), paging_state ? make_lw_shared<service::pager::paging_state>(*paging_state) : nullptr));
-                        return this->do_execute_base_query(proxy, std::move(primary_keys), state, *internal_options, now, std::move(paging_state)).then_unpack(consume_results).then([has_more_pages] {
+                        return this->do_execute_base_query(proxy, std::move(primary_keys), state, *internal_options, now, paging_state)
+                        .then_unpack([paging_state, consume_results = std::move(consume_results)](foreign_ptr<lw_shared_ptr<query::result>> results, lw_shared_ptr<query::read_command> cmd) {
+                            return consume_results(std::move(results), cmd, std::move(paging_state));
+                        }).then([](lw_shared_ptr<const service::pager::paging_state> paging_state) {
+                            bool has_more_pages = paging_state && paging_state->get_remaining() > 0;
                             return stop_iteration(!has_more_pages);
                         });
                     });
