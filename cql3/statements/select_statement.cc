@@ -60,6 +60,7 @@
 #include "db/consistency_level_validations.hh"
 #include "database.hh"
 #include <boost/algorithm/cxx11/any_of.hpp>
+#include <iostream>
 
 bool is_system_keyspace(const sstring& name);
 
@@ -1112,6 +1113,81 @@ query::partition_slice indexed_table_select_statement::get_partition_slice_for_g
             }
 
             partition_slice_builder.with_ranges(clustering_restrictions->bounds_ranges(options));
+        } else if (_restrictions->get_partition_key_restrictions()->is_token_range_restriction()) {
+            auto token_ranges = _restrictions->get_partition_key_restrictions()->bounds_ranges(options);
+            const column_definition& token_cdef = *_view_schema->clustering_key_columns().begin();
+
+            std::vector<query::clustering_range> all_bounds;
+
+            for (auto& token_range : token_ranges) {
+                auto& start_ring_postition = token_range.start()->value();
+                auto& end_ring_position = token_range.end()->value();
+
+                const bool include_start = start_ring_postition.bound() == dht::ring_position::token_bound::start;
+                const bool include_end = end_ring_position.bound() == dht::ring_position::token_bound::end;
+
+                int64_t signed_start_position = dht::token::to_int64(start_ring_postition.token());
+                int64_t signed_end_position = dht::token::to_int64(end_ring_position.token());
+
+                if (start_ring_postition.token().is_maximum()) {
+                    signed_start_position = std::numeric_limits<int64_t>::max();
+                }
+
+                if (end_ring_position.token().is_maximum()) {
+                    signed_end_position = std::numeric_limits<int64_t>::max();   
+                }
+
+                uint64_t unsigned_start_position = static_cast<uint64_t>(signed_start_position);
+                uint64_t unsigned_end_position = static_cast<uint64_t>(signed_end_position);
+
+                auto clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(_view_schema, false);
+
+                if (unsigned_start_position <= unsigned_end_position) {
+                    auto min_token_expr = expr::binary_operator{
+                        &token_cdef, include_start ? expr::oper_t::GTE : expr::oper_t::GT,
+                        ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(dht::token::from_int64(unsigned_start_position).data()))};
+                    auto max_token_expr = expr::binary_operator{
+                        &token_cdef, include_end ? expr::oper_t::LTE : expr::oper_t::LT,
+                        ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(dht::token::from_int64(unsigned_end_position).data()))};
+
+                    auto min_token_restriction = ::make_shared<restrictions::single_column_restriction>(token_cdef);
+                    min_token_restriction->expression = min_token_expr;
+                    clustering_restrictions->merge_with(min_token_restriction);
+
+                    auto max_token_restriction = ::make_shared<restrictions::single_column_restriction>(token_cdef);
+                    max_token_restriction->expression = max_token_expr;
+                    clustering_restrictions->merge_with(max_token_restriction);
+
+                    auto current_bounds = clustering_restrictions->bounds_ranges(options);
+                    all_bounds.insert(all_bounds.end(), current_bounds.begin(), current_bounds.end());
+                } else {
+                    auto min_token_expr = expr::binary_operator{
+                        &token_cdef, include_start ? expr::oper_t::GTE : expr::oper_t::GT,
+                        ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(dht::token::from_int64(unsigned_start_position).data()))};
+
+                    auto max_token_expr = expr::binary_operator{
+                        &token_cdef, include_end ? expr::oper_t::LTE : expr::oper_t::LT,
+                        ::make_shared<cql3::constants::value>(cql3::raw_value::make_value(dht::token::from_int64(unsigned_end_position).data()))};
+
+                    auto max_token_restriction = ::make_shared<restrictions::single_column_restriction>(token_cdef);
+                    max_token_restriction->expression = max_token_expr;
+                    clustering_restrictions->merge_with(max_token_restriction);
+
+                    auto current_bounds = clustering_restrictions->bounds_ranges(options);
+                    all_bounds.insert(all_bounds.end(), current_bounds.begin(), current_bounds.end());
+                    
+                    clustering_restrictions = ::make_shared<restrictions::single_column_clustering_key_restrictions>(_view_schema, false);
+
+                    auto min_token_restriction = ::make_shared<restrictions::single_column_restriction>(token_cdef);
+                    min_token_restriction->expression = min_token_expr;
+                    clustering_restrictions->merge_with(min_token_restriction);
+
+                    current_bounds = clustering_restrictions->bounds_ranges(options);
+                    all_bounds.insert(all_bounds.end(), current_bounds.begin(), current_bounds.end());
+                }
+            }
+
+            partition_slice_builder.with_ranges(all_bounds);
         }
     }
 
