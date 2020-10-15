@@ -106,6 +106,10 @@ public:
         return false;
     }
 
+    virtual bool is_token_range_restriction() const {
+        return false;
+    }
+
     virtual size_t prefix_size() const {
         return 0;
     }

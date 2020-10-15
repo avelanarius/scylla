@@ -70,6 +70,10 @@ public:
         return _column_definitions;
     }
 
+    bool is_token_range_restriction() const override {
+        return true;
+    }
+
     void merge_with(::shared_ptr<restriction> restriction) override {
         expression = make_conjunction(std::move(expression), restriction->expression);
     }

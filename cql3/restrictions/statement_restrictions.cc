@@ -192,7 +192,7 @@ statement_restrictions::statement_restrictions(database& db,
     auto& sim = cf.get_index_manager();
     const expr::allow_local_index allow_local(
             !_partition_key_restrictions->has_unrestricted_components(*_schema)
-            && _partition_key_restrictions->is_all_eq());
+            && (_partition_key_restrictions->is_all_eq() || _partition_key_restrictions->is_token_range_restriction()));
     const bool has_queriable_clustering_column_index = _clustering_columns_restrictions->has_supporting_index(sim, allow_local);
     const bool has_queriable_pk_index = _partition_key_restrictions->has_supporting_index(sim, allow_local);
     const bool has_queriable_regular_index = _nonprimary_key_restrictions->has_supporting_index(sim, allow_local);
@@ -268,7 +268,7 @@ statement_restrictions::statement_restrictions(database& db,
         if (has_queriable_regular_index) {
             _uses_secondary_indexing = true;
         } else if (!allow_filtering) {
-            throw exceptions::invalid_request_exception("Cannot execute this query as it might involve data filtering and "
+            throw exceptions::invalid_request_exception("Miejsce 1: Cannot execute this query as it might involve data filtering and "
                 "thus may have unpredictable performance. If you want to execute "
                 "this query despite the performance unpredictability, use ALLOW FILTERING");
         }
@@ -323,7 +323,7 @@ const std::vector<::shared_ptr<restrictions>>& statement_restrictions::index_res
 // local and restrictions does not include full partition key: 0 (do not pick)
 int statement_restrictions::score(const secondary_index::index& index) const {
     if (index.metadata().local()) {
-        const bool allow_local = !_partition_key_restrictions->has_unrestricted_components(*_schema) && _partition_key_restrictions->is_all_eq();
+        const bool allow_local = !_partition_key_restrictions->has_unrestricted_components(*_schema) && (_partition_key_restrictions->is_all_eq() || _partition_key_restrictions->is_token_range_restriction());
         return  allow_local ? 2 : 0;
     }
     return 1;
@@ -498,7 +498,7 @@ bool statement_restrictions::need_filtering() const {
 
     int number_of_filtering_restrictions = _nonprimary_key_restrictions->size();
     // If the whole partition key is restricted, it does not imply filtering
-    if (_partition_key_restrictions->has_unrestricted_components(*_schema) || !_partition_key_restrictions->is_all_eq()) {
+    if (_partition_key_restrictions->has_unrestricted_components(*_schema) || (!_partition_key_restrictions->is_all_eq() && !_partition_key_restrictions->is_token_range_restriction())) {
         number_of_filtering_restrictions += _partition_key_restrictions->size() + _clustering_columns_restrictions->size();
     } else if (_clustering_columns_restrictions->has_unrestricted_components(*_schema)) {
         number_of_filtering_restrictions += _clustering_columns_restrictions->size() - _clustering_columns_restrictions->prefix_size();
